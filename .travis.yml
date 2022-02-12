@@ -7,7 +7,7 @@ language: cpp
 #
 env:
   global:
-    - app_id=pvr.demo
+    - app_id=pvr.demo.json
 
 matrix:
   include:
