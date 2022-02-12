@@ -10,7 +10,8 @@
 
 #include <algorithm>
 #include <kodi/General.h>
-#include <tinyxml.h>
+#include <kodi/Filesystem.h>
+#include <json/json.h>
 
 /***********************************************************
   * PVR Client AddOn specific public library functions
@@ -396,98 +397,113 @@ PVR_ERROR CPVRDemo::CallMenuHook(const kodi::addon::PVRMenuhook& menuhook)
 
 bool CPVRDemo::LoadDemoData(void)
 {
-  TiXmlDocument xmlDoc;
-  std::string strSettingsFile = kodi::GetAddonPath("PVRDemoAddonSettings.xml");
+  std::string jsonReaderError;
+  Json::CharReaderBuilder jsonReaderBuilder;
+  std::unique_ptr<Json::CharReader> const reader(jsonReaderBuilder.newCharReader());
 
-  if (!xmlDoc.LoadFile(strSettingsFile))
+  std::string strSettingsFile = kodi::GetAddonPath("PVRDemoAddonSettings.json");
+
+  std::string fileContents;
+  kodi::vfs::CFile settingsFileHandle;
+
+  if (settingsFileHandle.OpenFile(strSettingsFile, ADDON_READ_NO_CACHE))
+  {
+    char buffer[1024];
+    int bytesRead = 0;
+    while ((bytesRead = settingsFileHandle.Read(buffer, sizeof(buffer) - 1)) > 0)
+      fileContents.append(buffer, bytesRead);
+
+    settingsFileHandle.Close();
+  }
+  else
+  {
+    kodi::Log(ADDON_LOG_ERROR, "%s Could not open source file to read: %s", __func__, strSettingsFile.c_str());
+  }
+
+  Json::Value jsonValue;
+  if (!reader->parse(fileContents.c_str(), fileContents.c_str() + fileContents.length(),
+                     &jsonValue, &jsonReaderError))
   {
     kodi::Log(ADDON_LOG_ERROR, "invalid demo data (no/invalid data file found at '%s')",
               strSettingsFile.c_str());
     return false;
   }
 
-  TiXmlElement* pRootElement = xmlDoc.RootElement();
-  if (strcmp(pRootElement->Value(), "demo") != 0)
+  if (jsonValue["demo"].isNull())
   {
-    kodi::Log(ADDON_LOG_ERROR, "invalid demo data (no <demo> tag found)");
+    kodi::Log(ADDON_LOG_ERROR, "invalid demo data (no demo entry found)");
     return false;
   }
 
   /* load channels */
   int iUniqueChannelId = 0;
-  TiXmlElement* pElement = pRootElement->FirstChildElement("channels");
-  if (pElement)
+  Json::Value channels = jsonValue["demo"]["channels"];
+  if (channels.isArray())
   {
-    TiXmlNode* pChannelNode = nullptr;
-    while ((pChannelNode = pElement->IterateChildren(pChannelNode)) != nullptr)
+    for (const Json::Value& c : channels)
     {
       PVRDemoChannel channel;
-      if (ScanXMLChannelData(pChannelNode, ++iUniqueChannelId, channel))
+      if (ScanJSONChannelData(c, ++iUniqueChannelId, channel))
         m_channels.emplace_back(channel);
     }
   }
 
   /* load channel groups */
   int iUniqueGroupId = 0;
-  pElement = pRootElement->FirstChildElement("channelgroups");
-  if (pElement)
+  Json::Value groups = jsonValue["demo"]["channelgroups"];
+  if (groups.isArray())
   {
-    TiXmlNode* pGroupNode = nullptr;
-    while ((pGroupNode = pElement->IterateChildren(pGroupNode)) != nullptr)
+    for (const Json::Value& g : groups)
     {
       PVRDemoChannelGroup group;
-      if (ScanXMLChannelGroupData(pGroupNode, ++iUniqueGroupId, group))
+      if (ScanJSONChannelGroupData(g, ++iUniqueGroupId, group))
         m_groups.emplace_back(group);
     }
   }
 
   /* load EPG entries */
-  pElement = pRootElement->FirstChildElement("epg");
-  if (pElement)
+  Json::Value entries = jsonValue["demo"]["epg"]["entries"];
+  if (entries.isArray())
   {
-    TiXmlNode* pEpgNode = nullptr;
-    while ((pEpgNode = pElement->IterateChildren(pEpgNode)) != nullptr)
+    for (const Json::Value& e : entries)
     {
-      ScanXMLEpgData(pEpgNode);
+      ScanJSONEpgData(e);
     }
   }
 
   /* load recordings */
   iUniqueGroupId = 0; // reset unique ids
-  pElement = pRootElement->FirstChildElement("recordings");
-  if (pElement)
+  Json::Value recordings = jsonValue["demo"]["recordings"];
+  if (recordings.isArray())
   {
-    TiXmlNode* pRecordingNode = nullptr;
-    while ((pRecordingNode = pElement->IterateChildren(pRecordingNode)) != nullptr)
+    for (const Json::Value& r : recordings)
     {
       PVRDemoRecording recording;
-      if (ScanXMLRecordingData(pRecordingNode, ++iUniqueGroupId, recording))
+      if (ScanJSONRecordingData(r, ++iUniqueGroupId, recording))
         m_recordings.emplace_back(recording);
     }
   }
 
   /* load deleted recordings */
-  pElement = pRootElement->FirstChildElement("recordingsdeleted");
-  if (pElement)
+  Json::Value recordingsdeleted = jsonValue["demo"]["recordingsdeleted"];
+  if (recordingsdeleted.isArray())
   {
-    TiXmlNode* pRecordingNode = nullptr;
-    while ((pRecordingNode = pElement->IterateChildren(pRecordingNode)) != nullptr)
+    for (const Json::Value& r : recordingsdeleted)
     {
       PVRDemoRecording recording;
-      if (ScanXMLRecordingData(pRecordingNode, ++iUniqueGroupId, recording))
+      if (ScanJSONRecordingData(r, ++iUniqueGroupId, recording))
         m_recordingsDeleted.emplace_back(recording);
     }
   }
 
   /* load timers */
-  pElement = pRootElement->FirstChildElement("timers");
-  if (pElement)
+  Json::Value timers = jsonValue["demo"]["timers"];
+  if (timers.isArray())
   {
-    TiXmlNode* pTimerNode = nullptr;
-    while ((pTimerNode = pElement->IterateChildren(pTimerNode)) != nullptr)
+    for (const Json::Value& t : timers)
     {
       PVRDemoTimer timer;
-      if (ScanXMLTimerData(pTimerNode, timer))
+      if (ScanJSONTimerData(t, timer))
         m_timers.emplace_back(timer);
     }
   }
@@ -530,138 +546,139 @@ std::string CPVRDemo::GetRecordingURL(const kodi::addon::PVRRecording& recording
   return "";
 }
 
-bool CPVRDemo::ScanXMLChannelData(const TiXmlNode* pChannelNode,
-                                  int iUniqueChannelId,
-                                  PVRDemoChannel& channel)
+bool CPVRDemo::ScanJSONChannelData(const Json::Value& node,
+                                   int iUniqueChannelId,
+                                   PVRDemoChannel& channel)
 {
   std::string strTmp;
   channel.iUniqueId = iUniqueChannelId;
 
   /* channel name */
-  if (!XMLGetString(pChannelNode, "name", strTmp))
+  if (!node["name"].isString())
     return false;
-  channel.strChannelName = strTmp;
+  channel.strChannelName = node["name"].asString();
 
-  /* radio/TV */
-  XMLGetBoolean(pChannelNode, "radio", channel.bRadio);
+  channel.bRadio = node["radio"].asBool();
 
   /* channel number */
-  if (!XMLGetInt(pChannelNode, "number", channel.iChannelNumber))
+  if (!node["number"].isInt())
     channel.iChannelNumber = iUniqueChannelId;
+  else
+    channel.iChannelNumber = node["number"].asInt();
 
   /* sub channel number */
-  if (!XMLGetInt(pChannelNode, "subnumber", channel.iSubChannelNumber))
-    channel.iSubChannelNumber = 0;
+  channel.iSubChannelNumber = node["subnumber"].asInt();
 
   /* CAID */
-  if (!XMLGetInt(pChannelNode, "encryption", channel.iEncryptionSystem))
-    channel.iEncryptionSystem = 0;
+  channel.iEncryptionSystem = node["encryption"].asInt();
 
   /* icon path */
-  if (!XMLGetString(pChannelNode, "icon", strTmp))
+  if (!node["icon"].isString())
     channel.strIconPath = m_strDefaultIcon;
   else
-    channel.strIconPath = ClientPath() + strTmp;
+    channel.strIconPath = ClientPath() + node["icon"].asString();
 
   /* stream url */
-  if (!XMLGetString(pChannelNode, "stream", strTmp))
+  if (!node["stream"].isString())
     channel.strStreamURL = m_strDefaultMovie;
   else
-    channel.strStreamURL = strTmp;
+    channel.strStreamURL = node["stream"].asString();
 
-  XMLGetBoolean(pChannelNode, "archive", channel.bArchive);
+  channel.bArchive = node["archive"].asBool();
 
   return true;
 }
 
-bool CPVRDemo::ScanXMLChannelGroupData(const TiXmlNode* pGroupNode,
-                                       int iUniqueGroupId,
-                                       PVRDemoChannelGroup& group)
+bool CPVRDemo::ScanJSONChannelGroupData(const Json::Value& node,
+                                        int iUniqueGroupId,
+                                        PVRDemoChannelGroup& group)
 {
-  std::string strTmp;
   group.iGroupId = iUniqueGroupId;
 
   /* group name */
-  if (!XMLGetString(pGroupNode, "name", strTmp))
+  if (!node["name"].isString())
     return false;
-  group.strGroupName = strTmp;
+  group.strGroupName = node["name"].asString();
 
   /* radio/TV */
-  XMLGetBoolean(pGroupNode, "radio", group.bRadio);
+  group.bRadio = node["radio"].asBool();
 
   /* sort position */
-  XMLGetInt(pGroupNode, "position", group.iPosition);
+  group.iPosition = node["position"].asInt();
 
   /* members */
-  const TiXmlNode* pMembers = pGroupNode->FirstChild("members");
-  const TiXmlNode* pMemberNode = nullptr;
-  while (pMembers != nullptr && (pMemberNode = pMembers->IterateChildren(pMemberNode)) != nullptr)
-  {
-    int iChannelId = atoi(pMemberNode->FirstChild()->Value());
-    if (iChannelId > -1)
-      group.members.emplace_back(iChannelId);
+  if (node["members"].isArray()) {
+    for (const Json::Value& m : node["members"])
+    {
+      int iChannelId = m.asInt();
+      if (iChannelId > -1)
+        group.members.emplace_back(iChannelId);
+    }
   }
 
   return true;
 }
 
-bool CPVRDemo::ScanXMLEpgData(const TiXmlNode* pEpgNode)
+bool CPVRDemo::ScanJSONEpgData(const Json::Value& node)
 {
-  std::string strTmp;
-  int iTmp;
   PVRDemoEpgEntry entry;
 
   /* broadcast id */
-  if (!XMLGetInt(pEpgNode, "broadcastid", entry.iBroadcastId))
+  if (!node["broadcastid"].isInt())
     return false;
+  entry.iBroadcastId = node["broadcastid"].asInt();
 
   /* channel id */
-  if (!XMLGetInt(pEpgNode, "channelid", iTmp))
+  if (!node["channelid"].isInt())
     return false;
-  PVRDemoChannel& channel = m_channels.at(iTmp - 1);
+  PVRDemoChannel& channel = m_channels.at(node["channelid"].asInt() - 1);
   entry.iChannelId = channel.iUniqueId;
 
   /* title */
-  if (!XMLGetString(pEpgNode, "title", strTmp))
+  if (!node["title"].isString())
     return false;
-  entry.strTitle = strTmp;
+  entry.strTitle = node["title"].asString();
 
   /* start */
-  if (!XMLGetInt(pEpgNode, "start", iTmp))
+  if (!node["start"].isInt())
     return false;
-  entry.startTime = iTmp;
+  entry.startTime = node["start"].asInt();
 
   /* end */
-  if (!XMLGetInt(pEpgNode, "end", iTmp))
+  if (!node["end"].isInt())
     return false;
-  entry.endTime = iTmp;
+  entry.endTime = node["end"].asInt();
 
   /* plot */
-  if (XMLGetString(pEpgNode, "plot", strTmp))
-    entry.strPlot = strTmp;
+  if (node["plot"].isString())
+    entry.strPlot = node["plot"].asString();
 
   /* plot outline */
-  if (XMLGetString(pEpgNode, "plotoutline", strTmp))
-    entry.strPlotOutline = strTmp;
+  if (node["plotoutline"].isString())
+    entry.strPlotOutline = node["plot"].asString();
 
-  if (!XMLGetInt(pEpgNode, "series", entry.iSeriesNumber))
+  if (!node["series"].isInt())
     entry.iSeriesNumber = EPG_TAG_INVALID_SERIES_EPISODE;
+  else
+    entry.iSeriesNumber = node["series"].asInt();
 
-  if (!XMLGetInt(pEpgNode, "episode", entry.iEpisodeNumber))
+  if (!node["episode"].isInt())
     entry.iEpisodeNumber = EPG_TAG_INVALID_SERIES_EPISODE;
+  else
+    entry.iEpisodeNumber = node["episode"].asInt();
 
-  if (XMLGetString(pEpgNode, "episodetitle", strTmp))
-    entry.strEpisodeName = strTmp;
+  if (node["episodetitle"].isString())
+    entry.strEpisodeName = node["episodetitle"].asString();
 
   /* icon path */
-  if (XMLGetString(pEpgNode, "icon", strTmp))
-    entry.strIconPath = strTmp;
+  if (node["icon"].isString())
+    entry.strIconPath = node["icon"].asString();
 
   /* genre type */
-  XMLGetInt(pEpgNode, "genretype", entry.iGenreType);
+  entry.iGenreType = node["genretype"].asInt();
 
   /* genre subtype */
-  XMLGetInt(pEpgNode, "genresubtype", entry.iGenreSubType);
+  entry.iGenreSubType = node["genresubtype"].asInt();
 
   kodi::Log(ADDON_LOG_DEBUG, "loaded EPG entry '%s' channel '%d' start '%d' end '%d'",
             entry.strTitle.c_str(), entry.iChannelId, entry.startTime, entry.endTime);
@@ -671,75 +688,77 @@ bool CPVRDemo::ScanXMLEpgData(const TiXmlNode* pEpgNode)
   return true;
 }
 
-bool CPVRDemo::ScanXMLRecordingData(const TiXmlNode* pRecordingNode,
-                                    int iUniqueGroupId,
-                                    PVRDemoRecording& recording)
+bool CPVRDemo::ScanJSONRecordingData(const Json::Value& node,
+                                     int iUniqueGroupId,
+                                     PVRDemoRecording& recording)
 {
-  std::string strTmp;
-
   recording.strRecordingId = std::to_string(iUniqueGroupId);
 
   /* radio/TV */
-  XMLGetBoolean(pRecordingNode, "radio", recording.bRadio);
+  recording.bRadio = node["radio"].asBool();
 
   /* recording title */
-  if (!XMLGetString(pRecordingNode, "title", strTmp))
+  if (!node["title"].isString())
     return false;
-  recording.strTitle = strTmp;
+  recording.strTitle = node["title"].asString();
 
   /* recording url */
-  if (!XMLGetString(pRecordingNode, "url", strTmp))
+  if (!node["url"].isString())
     recording.strStreamURL = m_strDefaultMovie;
   else
-    recording.strStreamURL = strTmp;
+    recording.strStreamURL = node["url"].asString();
 
   /* recording path */
-  if (XMLGetString(pRecordingNode, "directory", strTmp))
-    recording.strDirectory = strTmp;
+  if (node["directory"].isString())
+    recording.strDirectory = node["directory"].asString();
 
   /* channel name */
-  if (XMLGetString(pRecordingNode, "channelname", strTmp))
-    recording.strChannelName = strTmp;
+  if (node["channelname"].isString())
+    recording.strChannelName = node["channelname"].asString();
 
   /* plot */
-  if (XMLGetString(pRecordingNode, "plot", strTmp))
-    recording.strPlot = strTmp;
+  if (node["plot"].isString())
+    recording.strPlot = node["plot"].asString();
 
   /* plot outline */
-  if (XMLGetString(pRecordingNode, "plotoutline", strTmp))
-    recording.strPlotOutline = strTmp;
+  if (node["plotoutline"].isString())
+    recording.strPlotOutline = node["plot"].asString();
 
   /* Episode Name */
-  if (XMLGetString(pRecordingNode, "episodetitle", strTmp))
-    recording.strEpisodeName = strTmp;
+  if (node["episodetitle"].isString())
+    recording.strEpisodeName = node["episodetitle"].asString();
 
   /* Series Number */
-  if (!XMLGetInt(pRecordingNode, "series", recording.iSeriesNumber))
+  if (!node["series"].isInt())
     recording.iSeriesNumber = PVR_RECORDING_INVALID_SERIES_EPISODE;
+  else
+    recording.iSeriesNumber = node["series"].asInt();
 
   /* Episode Number */
-  if (!XMLGetInt(pRecordingNode, "episode", recording.iEpisodeNumber))
+  if (!node["episode"].isInt())
     recording.iEpisodeNumber = PVR_RECORDING_INVALID_SERIES_EPISODE;
+  else
+    recording.iEpisodeNumber = node["episode"].asInt();
 
   /* genre type */
-  XMLGetInt(pRecordingNode, "genretype", recording.iGenreType);
+  recording.iGenreType = node["genretype"].asInt();
 
   /* genre subtype */
-  XMLGetInt(pRecordingNode, "genresubtype", recording.iGenreSubType);
+  recording.iGenreSubType = node["genresubtype"].asInt();
 
   /* duration */
-  XMLGetInt(pRecordingNode, "duration", recording.iDuration);
+  recording.iDuration = node["duration"].asInt();
 
   /* recording time */
-  if (XMLGetString(pRecordingNode, "time", strTmp))
+  if (node["time"].isString())
   {
     time_t timeNow = time(nullptr);
     struct tm* now = localtime(&timeNow);
 
-    auto delim = strTmp.find(':');
+    auto delim = node["time"].asString().find(':');
     if (delim != std::string::npos)
     {
-      sscanf(strTmp.c_str(), "%d:%d", &now->tm_hour, &now->tm_min);
+      sscanf(node["time"].asString().c_str(), "%d:%d", &now->tm_hour, &now->tm_min);
       now->tm_mday--; // yesterday
 
       recording.recordingTime = mktime(now);
@@ -749,100 +768,55 @@ bool CPVRDemo::ScanXMLRecordingData(const TiXmlNode* pRecordingNode,
   return true;
 }
 
-bool CPVRDemo::ScanXMLTimerData(const TiXmlNode* pTimerNode, PVRDemoTimer& timer)
+bool CPVRDemo::ScanJSONTimerData(const Json::Value& node, PVRDemoTimer& timer)
 {
-  std::string strTmp;
-  int iTmp;
-
   time_t timeNow = time(nullptr);
   struct tm* now = localtime(&timeNow);
 
   /* channel id */
-  if (!XMLGetInt(pTimerNode, "channelid", iTmp))
+  if (!node["channelid"].isInt())
     return false;
-  PVRDemoChannel& channel = m_channels.at(iTmp - 1);
+  PVRDemoChannel& channel = m_channels.at(node["channelid"].asInt() - 1);
   timer.iChannelId = channel.iUniqueId;
 
   /* state */
-  if (XMLGetInt(pTimerNode, "state", iTmp))
-    timer.state = (PVR_TIMER_STATE)iTmp;
+  if (node["state"].isInt())
+    timer.state = (PVR_TIMER_STATE)node["state"].asInt();
 
   /* title */
-  if (!XMLGetString(pTimerNode, "title", strTmp))
+  if (!node["title"].isString())
     return false;
-  timer.strTitle = strTmp;
+  timer.strTitle = node["title"].asString();
 
   /* summary */
-  if (!XMLGetString(pTimerNode, "summary", strTmp))
+  if (!node["summary"].isString())
     return false;
-  timer.strSummary = strTmp;
+  timer.strSummary = node["summary"].asString();
 
   /* start time */
-  if (XMLGetString(pTimerNode, "starttime", strTmp))
+  if (node["starttime"].isString())
   {
-    auto delim = strTmp.find(':');
+    auto delim = node["starttime"].asString().find(':');
     if (delim != std::string::npos)
     {
-      sscanf(strTmp.c_str(), "%d:%d", &now->tm_hour, &now->tm_min);
+      sscanf(node["starttime"].asString().c_str(), "%d:%d", &now->tm_hour, &now->tm_min);
       timer.startTime = mktime(now);
     }
   }
 
   /* end time */
-  if (XMLGetString(pTimerNode, "endtime", strTmp))
+  if (node["endtime"].isString())
   {
-    auto delim = strTmp.find(':');
+    auto delim = node["endtime"].asString().find(':');
     if (delim != std::string::npos)
     {
-      sscanf(strTmp.c_str(), "%d:%d", &now->tm_hour, &now->tm_min);
+      sscanf(node["endtime"].asString().c_str(), "%d:%d", &now->tm_hour, &now->tm_min);
       timer.endTime = mktime(now);
     }
   }
 
   kodi::Log(ADDON_LOG_DEBUG, "loaded timer '%s' channel '%d' start '%d' end '%d'",
             timer.strTitle.c_str(), timer.iChannelId, timer.startTime, timer.endTime);
-  return true;
-}
-
-bool CPVRDemo::XMLGetInt(const TiXmlNode* pRootNode, const std::string& strTag, int& iIntValue)
-{
-  const TiXmlNode* pNode = pRootNode->FirstChild(strTag);
-  if (!pNode || !pNode->FirstChild())
-    return false;
-  iIntValue = atoi(pNode->FirstChild()->Value());
-  return true;
-}
-
-bool CPVRDemo::XMLGetString(const TiXmlNode* pRootNode, const std::string& strTag, std::string& strStringValue)
-{
-  const TiXmlElement* pElement = pRootNode->FirstChildElement(strTag);
-  if (!pElement)
-    return false;
-  const TiXmlNode* pNode = pElement->FirstChild();
-  if (pNode)
-  {
-    strStringValue = pNode->Value();
-    return true;
-  }
-  strStringValue.clear();
-  return false;
-}
-
-bool CPVRDemo::XMLGetBoolean(const TiXmlNode* pRootNode, const std::string& strTag, bool& bBoolValue)
-{
-  const TiXmlNode* pNode = pRootNode->FirstChild(strTag);
-  if (!pNode || !pNode->FirstChild())
-    return false;
-  std::string strEnabled = pNode->FirstChild()->Value();
-  std::transform(strEnabled.begin(), strEnabled.end(), strEnabled.begin(), ::tolower);
-  if (strEnabled == "off" || strEnabled == "no" || strEnabled == "disabled" || strEnabled == "false" || strEnabled == "0" )
-    bBoolValue = false;
-  else
-  {
-    bBoolValue = true;
-    if (strEnabled != "on" && strEnabled != "yes" && strEnabled != "enabled" && strEnabled != "true")
-      return false; // invalid bool switch - it's probably some other string.
-  }
   return true;
 }
 
