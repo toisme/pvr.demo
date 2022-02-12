@@ -86,6 +86,9 @@ struct PVRDemoChannelGroup
 };
 
 class TiXmlNode;
+namespace Json{
+  class Value;
+}
 
 class ATTRIBUTE_HIDDEN CPVRDemo : public kodi::addon::CAddonBase,
                                   public kodi::addon::CInstancePVRClient
@@ -147,21 +150,17 @@ protected:
 
 private:
   PVR_ERROR CallMenuHook(const kodi::addon::PVRMenuhook& menuhook);
-  bool ScanXMLChannelData(const TiXmlNode* pChannelNode,
-                          int iUniqueChannelId,
-                          PVRDemoChannel& channel);
-  bool ScanXMLChannelGroupData(const TiXmlNode* pGroupNode,
-                               int iUniqueGroupId,
-                               PVRDemoChannelGroup& group);
-  bool ScanXMLEpgData(const TiXmlNode* pEpgNode);
-  bool ScanXMLRecordingData(const TiXmlNode* pRecordingNode,
-                            int iUniqueGroupId,
-                            PVRDemoRecording& recording);
-  bool ScanXMLTimerData(const TiXmlNode* pTimerNode, PVRDemoTimer& timer);
-
-  bool XMLGetInt(const TiXmlNode* pRootNode, const std::string& strTag, int& iIntValue);
-  bool XMLGetString(const TiXmlNode* pRootNode, const std::string& strTag, std::string& strStringValue);
-  bool XMLGetBoolean(const TiXmlNode* pRootNode, const std::string& strTag, bool& bBoolValue);
+  bool ScanJSONChannelData(const Json::Value& node,
+                           int iUniqueChannelId,
+                           PVRDemoChannel& channel);
+  bool ScanJSONChannelGroupData(const Json::Value& node,
+                                int iUniqueChannelId,
+                                PVRDemoChannelGroup& group);
+  bool ScanJSONEpgData(const Json::Value& node);
+  bool ScanJSONRecordingData(const Json::Value& node,
+                             int iUniqueGroupId,
+                             PVRDemoRecording& recording);
+  bool ScanJSONTimerData(const Json::Value& node, PVRDemoTimer& timer);
 
   std::vector<PVRDemoChannelGroup> m_groups;
   std::vector<PVRDemoChannel> m_channels;
