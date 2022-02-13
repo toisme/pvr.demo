@@ -1,0 +1,55 @@
+diff --git a/cmake/addons/bootstrap/CMakeLists.txt b/cmake/addons/bootstrap/CMakeLists.txt
+index 66b7e3d..2e0d416 100644
+--- a/cmake/addons/bootstrap/CMakeLists.txt
++++ b/cmake/addons/bootstrap/CMakeLists.txt
+@@ -60,6 +60,7 @@ file(GLOB repos repositories/*.txt)
+ foreach(repo ${repos})
+   file(STRINGS ${repo} repo_definition)
+   string(REPLACE " " ";" repo_definition ${repo_definition})
++  list(LENGTH repo_definition repo_deflength)
+   list(GET repo_definition 0 repo_id)
+ 
+   list(FIND REPOSITORY_TO_BUILD ${repo_id} idx)
+@@ -69,14 +70,36 @@ foreach(repo ${repos})
+     # get the URL of the repository
+     list(GET repo_definition 1 repo_url)
+ 
+-    # get the revision of the repository if not provided as an argument
+-    if(NOT REPOSITORY_REVISION)
+-      list(GET repo_definition 2 repo_revision)
++    if(repo_deflength GREATER 2)
++      # get the revision of the repository if not provided as an argument
++      if(NOT REPOSITORY_REVISION)
++        list(GET repo_definition 2 repo_revision)
++      else()
++        set(repo_revision "${REPOSITORY_REVISION}")
++      endif()
++
++      bootstrap_repo(${repo_id} ${repo_url} ${repo_revision})
+     else()
+-      set(repo_revision "${REPOSITORY_REVISION}")
+-    endif()
++      # check if the URL starts with file://
++      string(REGEX MATCH "^file://.*$" local_url "${repo_url}")
+ 
+-    bootstrap_repo(${repo_id} ${repo_url} ${repo_revision})
++      if(local_url)
++        # remove the file:// protocol from the URL
++        string(REPLACE "file://" "" local_url "${repo_url}")
++        message(STATUS "Bootstrapping addons from ${repo_id} (${local_url})...")
++        externalproject_add(${repo_id}
++                            SOURCE_DIR ${local_url}
++                            PREFIX ${BUILD_DIR}/${repo_id}
++                            CONFIGURE_COMMAND ""
++                            BUILD_COMMAND ""
++                            INSTALL_COMMAND ${CMAKE_COMMAND}
++                                            -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
++                                            -DPROJECT_SOURCE_DIR=<SOURCE_DIR>
++                                            -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
++                                            -P ${PROJECT_SOURCE_DIR}/Bootstrap.cmake
++                            )
++      endif()
++    endif()
+   endif()
+ endforeach()
+ 
